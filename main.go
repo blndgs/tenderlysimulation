@@ -1,15 +1,20 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"math/big"
 	"os"
 	"strings"
 
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/joho/godotenv"
 	"github.com/stackup-wallet/stackup-bundler/pkg/userop"
 	"golang.org/x/crypto/sha3"
@@ -29,16 +34,23 @@ func main() {
 	addr, key := generateWallet()
 	defer zeroKey(key)
 
+	rpcURL := os.Getenv("ETH_RPC_URL")
+	if rpcURL == "" {
+		panic("please provide a valid RPC url")
+	}
+
+	sender := getSender(addr, rpcURL)
+
 	userOperation := &userop.UserOperation{
-		Sender:               addr,
+		Sender:               sender,
 		Nonce:                big.NewInt(0),
 		CallData:             []byte(""),
 		InitCode:             getInitCode(addr),
-		CallGasLimit:         big.NewInt(1000),
-		PreVerificationGas:   big.NewInt(1000),
-		VerificationGasLimit: big.NewInt(1000),
-		MaxFeePerGas:         big.NewInt(1000),
-		MaxPriorityFeePerGas: big.NewInt(1000),
+		CallGasLimit:         big.NewInt(200000),
+		PreVerificationGas:   big.NewInt(500000),
+		VerificationGasLimit: big.NewInt(500000),
+		MaxFeePerGas:         big.NewInt(200000),
+		MaxPriorityFeePerGas: big.NewInt(200000),
 	}
 
 	userOperation, err := sign(chainID, key, userOperation)
@@ -46,12 +58,7 @@ func main() {
 		log.Fatalf("could not sign userop...%v", err)
 	}
 
-	rpcURL := os.Getenv("ETH_RPC_URL")
-	if rpcURL == "" {
-		panic("please provide a valid RPC url")
-	}
-
-	if err := fundUserWallet(addr, rpcURL); err != nil {
+	if err := fundUserWallet(sender, rpcURL); err != nil {
 		log.Fatalf("could not fund wallet with ETH... %v", err)
 	}
 
@@ -95,10 +102,17 @@ func getSignature(chainID *big.Int, privateKey *ecdsa.PrivateKey, entryPointAddr
 
 func getInitCode(addr common.Address) []byte {
 
-	s := fmt.Sprintf(`0x42E60c23aCe33c23e0945a07f6e2c1E53843a1d55fbfb9cf000000000000000000000000%s0000000000000000000000000000000000000000000000000000000000000000`,
+	s := fmt.Sprintf(`0x61e218301932a2550AE8E4Cd1EcfCA7bE64E57DC5fbfb9cf000000000000000000000000%s0000000000000000000000000000000000000000000000000000000000000000`,
 		strings.TrimPrefix(addr.Hex(), "0x"))
 
-	return []byte(s)
+	hexStr := strings.TrimPrefix(s, "0x")
+
+	b, err := hex.DecodeString(hexStr)
+	if err != nil {
+		panic("could not decode string")
+	}
+
+	return b
 }
 
 func generateWallet() (common.Address, *ecdsa.PrivateKey) {
@@ -131,4 +145,62 @@ func zeroKey(k *ecdsa.PrivateKey) {
 	for i := range b {
 		b[i] = 0
 	}
+}
+
+func getSender(account common.Address, rpcURL string) common.Address {
+
+	parsed, err := abi.JSON(strings.NewReader(`
+[
+  {
+    "constant": false,
+    "inputs": [
+      {
+        "type": "address"
+      },
+		{
+		"type" : "uint256"
+		}
+    ],
+    "name": "getAddress",
+    "outputs": [
+      {
+        "type": "address"
+      }
+    ],
+    "payable": false,
+    "type": "function"
+  }
+]
+		`))
+	if err != nil {
+		panic(err)
+	}
+
+	callData, err := parsed.Pack("getAddress", account, big.NewInt(0))
+	if err != nil {
+		panic(err)
+	}
+
+	client, err := ethclient.Dial(rpcURL)
+	if err != nil {
+		panic(err)
+	}
+
+	to := common.HexToAddress("0x61e218301932a2550ae8e4cd1ecfca7be64e57dc")
+
+	result, err := client.CallContract(context.Background(), ethereum.CallMsg{
+		To:   &to,
+		Data: callData,
+	}, nil)
+	if err != nil {
+		panic(err)
+	}
+
+	addr := common.Address{}
+	err = parsed.UnpackIntoInterface(&addr, "getAddress", result)
+	if err != nil {
+		panic(err)
+	}
+
+	return addr
 }

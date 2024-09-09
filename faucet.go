@@ -19,7 +19,7 @@ func fundUserWallet(addr common.Address, rpcURL string) error {
       [
         "%s"
         ],
-      "0xDE0B6B3A7640000"
+      "0x3635C9ADC5DEA00000"
       ]
 }
 	`, addr.Hex())

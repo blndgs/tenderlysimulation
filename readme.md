@@ -15,5 +15,15 @@ make env
 make run
 ```
 
+## Run but publish tx onchain
+
+```sh
+make run-onchain
+
+```
+
+> [!NOTE]
+> Please include your signer key in `.env`
+
 This would generate a new throwaway Ethereum wallet, create a very basic userop,
-sign it and try to run a simulation against the RPC
+sign it and try to run a simulation or publish the tx against the RPC

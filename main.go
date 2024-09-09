@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"log"
 	"math/big"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -16,9 +18,13 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/joho/godotenv"
+	"github.com/stackup-wallet/stackup-bundler/pkg/entrypoint/transaction"
+	"github.com/stackup-wallet/stackup-bundler/pkg/signer"
 	"github.com/stackup-wallet/stackup-bundler/pkg/userop"
 	"golang.org/x/crypto/sha3"
 )
+
+var entryPointAddr = common.HexToAddress("0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789")
 
 func main() {
 
@@ -30,6 +36,12 @@ func main() {
 	if !ok {
 		log.Fatal("chain id is invalid..")
 	}
+
+	var sendOnchainOperation bool
+
+	flag.BoolVar(&sendOnchainOperation, "onchain", false, "Send transaction onchain")
+
+	flag.Parse()
 
 	addr, key := generateWallet()
 	defer zeroKey(key)
@@ -62,17 +74,28 @@ func main() {
 		log.Fatalf("could not fund wallet with ETH... %v", err)
 	}
 
-	resp, err := doSimulateUserop(userOperation, common.HexToAddress("0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789"), rpcURL)
+	client, err := ethclient.Dial(rpcURL)
+	if err != nil {
+		panic(fmt.Sprintf("could not connect to RPC url...%s", err.Error()))
+	}
+
+	s, err := signer.New(fmt.Sprintf("%x", crypto.FromECDSA(key)))
+	if err != nil {
+		panic(err.Error())
+	}
+
+	if sendOnchainOperation {
+		sendOnchain(chainID, client, s, []*userop.UserOperation{userOperation})
+		return
+	}
+
+	_, err = doSimulateUserop(userOperation, common.HexToAddress("0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789"), rpcURL)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-
-	_ = resp
 }
 
 func sign(chainID *big.Int, privateKey *ecdsa.PrivateKey, userOp *userop.UserOperation) (*userop.UserOperation, error) {
-
-	entryPointAddr := common.HexToAddress("0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789")
 
 	signature, err := getSignature(chainID, privateKey, entryPointAddr, userOp)
 	if err != nil {
@@ -203,4 +226,34 @@ func getSender(account common.Address, rpcURL string) common.Address {
 	}
 
 	return addr
+}
+
+func sendOnchain(chainID *big.Int,
+	client *ethclient.Client, s *signer.EOA,
+	ops []*userop.UserOperation) {
+
+	s, err := signer.New(os.Getenv("SIGNER_PRIVATE_KEY"))
+	if err != nil {
+		panic(err)
+	}
+
+	opts := transaction.Opts{
+		EOA:         s,
+		Eth:         client,
+		ChainID:     chainID,
+		EntryPoint:  entryPointAddr,
+		Batch:       ops,
+		Beneficiary: s.Address,
+		BaseFee:     big.NewInt(1),
+		Tip:         big.NewInt(3),
+		GasPrice:    big.NewInt(4),
+		GasLimit:    1544071,
+		WaitTimeout: time.Minute * 1,
+	}
+
+	if txn, err := transaction.HandleOps(&opts); err != nil {
+		panic(err.Error())
+	} else {
+		fmt.Printf("TX published onchain.... %s\n", txn.Hash().Hex())
+	}
 }
